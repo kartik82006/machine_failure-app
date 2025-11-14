@@ -1,68 +1,70 @@
 import streamlit as st
-import pandas as pd
-import requests
-import joblib
-import io
-
-st.title("Machine Failure Predictor")
-
-st.write("Upload your CSV below:")
-
-uploaded_file = st.file_uploader("Select CSV", type=["csv"])
+import numpy as np
+import pickle
 
 # --------------------------
-# DELAYED MODEL LOADING
+# Load all 4 trained models
 # --------------------------
-model_urls = {
-    "model_1": "https://github.com/DURVA-GARGGG/machine_failure-app/releases/download/v1/model1.pkl",
-    "model_2": "https://github.com/DURVA-GARGGG/machine_failure-app/releases/download/v1/model2.pkl",
-    "model_3": "https://github.com/DURVA-GARGGG/machine_failure-app/releases/download/v1/model3.pkl",
-}
+with open("logistic_reg.pkl", "rb") as f:
+    model_lr = pickle.load(f)
 
-loaded_models = {}  # empty at start
+with open("rf_model.pkl", "rb") as f:
+    model_rf = pickle.load(f)
 
+with open("xgb_model.pkl", "rb") as f:
+    model_xgb = pickle.load(f)
 
-def load_models_on_demand():
-    # Only load if not already loaded
-    if loaded_models:
-        return loaded_models
-
-    progress = st.progress(0)
-    status = st.empty()
-
-    total = len(model_urls)
-    for i, (name, url) in enumerate(model_urls.items(), start=1):
-        status.write(f"Downloading **{name}** ...")
-
-        response = requests.get(url)
-        response.raise_for_status()
-
-        file_like = io.BytesIO(response.content)
-        loaded_models[name] = joblib.load(file_like)
-
-        progress.progress(i / total)
-
-    status.success("Models loaded successfully!")
-    return loaded_models
-
+with open("lgbm_model.pkl", "rb") as f:
+    model_lgbm = pickle.load(f)
 
 # --------------------------
-#     MAIN APP UI
+# App UI
 # --------------------------
+st.set_page_config(page_title="Machine Failure Prediction", page_icon="⚙️")
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    st.write("### Preview of Data:")
-    st.dataframe(df)
+st.title("Machine Failure Prediction App")
+st.write("Enter the machine parameters below:")
 
-    if st.button("🔄 Load Models"):
-        models = load_models_on_demand()
+# --------------------------
+# User Inputs
+# --------------------------
+type_map = {"L": 0, "M": 1, "H": 2}
 
-    if st.button("🚀 Predict Failure"):
-        if not loaded_models:
-            st.error("Please load models first using the button above.")
-        else:
-            model = loaded_models["model_1"]  # your primary model
-            preds = model.predict(df)
-            st.write("### Prediction Output:")
-            st.write(preds)
+machine_type = st.selectbox("Machine Type", ["L", "M", "H"])
+air_temp = st.number_input("Air Temperature (°C)", value=300.0)
+proc_temp = st.number_input("Process Temperature (°C)", value=310.0)
+rot_speed = st.number_input("Rotational Speed (rpm)", value=1500)
+torque = st.number_input("Torque (Nm)", value=40.0)
+tool_wear = st.number_input("Tool Wear (min)", value=100.0)
+
+# Prepare input
+input_data = np.array([
+    type_map[machine_type],
+    air_temp,
+    proc_temp,
+    rot_speed,
+    torque,
+    tool_wear
+]).reshape(1, -1)
+
+# --------------------------
+# Prediction
+# --------------------------
+if st.button("Predict Failure"):
+    pred_lr = model_lr.predict(input_data)[0]
+    pred_rf = model_rf.predict(input_data)[0]
+    pred_xgb = model_xgb.predict(input_data)[0]
+    pred_lgbm = model_lgbm.predict(input_data)[0]
+
+    st.subheader("Model Predictions")
+    st.write(f"**Logistic Regression:** {'Failure' if pred_lr else 'No Failure'}")
+    st.write(f"**Random Forest:** {'Failure' if pred_rf else 'No Failure'}")
+    st.write(f"**XGBoost:** {'Failure' if pred_xgb else 'No Failure'}")
+    st.write(f"**LightGBM:** {'Failure' if pred_lgbm else 'No Failure'}")
+
+    # Majority vote
+    total = pred_lr + pred_rf + pred_xgb + pred_lgbm
+    final = "Machine Likely to Fail!" if total >= 2 else "✔️ Machine is Safe"
+
+    st.subheader("Final Verdict")
+    st.success(final) if total < 2 else st.error(final)
