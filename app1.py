@@ -179,12 +179,26 @@ with col1:
 
         # show results
         st.markdown("### Model outputs")
-        rows = []
-        for name, res in model_results.items():
-            if "error" in res:
-                rows.append({"Model": name, "Pred": "ERR", "Prob": "-", "Notes": res["error"]})
-            else:
-                rows.append({"Model": name, "Pred": int(res["pred"]), "Prob": f"{res['proba']:.3f}" if res['proba'] is not None else "-", "Notes": ""})
+         # Create clean table structure
+    table_data = []
+    for model_name, result in results.items():
+        pred = result.get("prediction", "—")
+        prob = result.get("probability", "—")
+        note = result.get("note", "")
+
+        table_data.append({
+            "Model": model_name,
+            "Pred": pred,
+            "Prob": prob,
+            "Notes": note
+        })
+
+    # Use Streamlit dataframe for clean formatting
+    st.dataframe(
+        table_data,
+        use_container_width=True,
+        hide_index=True
+    )
         df_results = pd.DataFrame(rows)
         st.table(df_results.set_index("Model"))
 
