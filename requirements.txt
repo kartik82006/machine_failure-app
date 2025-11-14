@@ -1,0 +1,12 @@
+pandas
+numpy
+scikit-learn
+matplotlib
+seaborn
+jupyterlab
+nbdime
+xgboost
+lightgbm
+iterative-stratification
+imbalanced-learn
+joblib
