@@ -60,10 +60,10 @@ def load_models() -> Dict[str, Any]:
     If a model can't be loaded we keep the Exception/FileNotFoundError so UI can show messages.
     """
     specs = {
-        "Logistic Regression": ("models/final_model_pipeline_lr.pkl", "final_model_pipeline_lr.pkl"),
-        "LightGBM": ("models/final_model_pipeline_lgb.pkl", "final_model_pipeline_lgb.pkl"),
-        "Random Forest": ("models/final_model_pipeline_rfr.pkl", "final_model_pipeline_rfr.pkl"),
-        "XGBoost": ("models/final_model_pipeline_xgb.pkl", "final_model_pipeline_xgb.pkl"),
+        "Logistic Regression": ("final_model_pipeline_lr.pkl", "final_model_pipeline_lr.pkl"),
+        "LightGBM": ("final_model_pipeline_lgb.pkl", "final_model_pipeline_lgb.pkl"),
+        "Random Forest": ("final_model_pipeline_rfr.pkl", "final_model_pipeline_rfr.pkl"),
+        "XGBoost": ("final_model_pipeline_xgb.pkl", "final_model_pipeline_xgb.pkl"),
     }
     loaded: Dict[str, Any] = {}
     for name, (rel_path, asset_name) in specs.items():
