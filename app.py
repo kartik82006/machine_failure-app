@@ -1,113 +1,150 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import pickle
-import base64
-import os
+from io import BytesIO
 
 st.set_page_config(page_title="Machine Failure Prediction", layout="wide")
 
-# -------------------------------------------------------
-# Sidebar
-# -------------------------------------------------------
-st.sidebar.title("⚙️ Settings")
-st.sidebar.info(
-    "Upload a CSV file and the app will run predictions using all trained models."
-)
 
-# -------------------------------------------------------
-# Helper: Load model safely
-# -------------------------------------------------------
+# -----------------------------
+# Load Models Safely
+# -----------------------------
+@st.cache_resource
 def load_model(path):
-    if not os.path.exists(path):
-        return None, f"❌ Missing file: {path}"
     try:
         with open(path, "rb") as f:
-            return pickle.load(f), "Loaded successfully"
+            return pickle.load(f)
     except Exception as e:
-        return None, f"❌ Error loading: {str(e)}"
+        return None
 
-# -------------------------------------------------------
-# File Upload Section
-# -------------------------------------------------------
-st.title("🧠 Machine Failure Prediction App")
 
-uploaded_file = st.file_uploader("📤 Upload CSV", type=["csv"])
+models = {
+    "Logistic Regression": load_model("final_model_pipeline_lr.pkl"),
+    "Random Forest": load_model("final_model_pipeline_rfr.pkl"),
+    "XGBoost": load_model("final_model_pipeline_xgb.pkl"),
+    "LightGBM": load_model("final_model_pipeline_lgb.pkl"),
+}
 
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
 
-    st.subheader("📄 Preview of Uploaded Data")
-    st.dataframe(df.head(), use_container_width=True)
+# -----------------------------
+# Sidebar
+# -----------------------------
+st.sidebar.title("⚙️ Machine Failure Prediction")
+st.sidebar.info(
+    "Upload a CSV or use the demo input.\n\n"
+    "All 4 models will run and generate predictions."
+)
 
-    # Automatically detect last column as target
-    target_col = df.columns[-1]
-    st.success(f"Detected target column: **{target_col}**")
 
-    # Prepare input features
-    X = df.drop(columns=[target_col])
+# -----------------------------
+# Helper Functions
+# -----------------------------
+def prepare_features(df):
+    """Drop the target column if present."""
+    df = df.copy()
+    if "Tumor" in df.columns:
+        df = df.drop(columns=["Tumor"])
+    return df
 
-    # ---------------------------------------------------
-    # Models dictionary
-    # ---------------------------------------------------
-    model_files = {
-        "Logistic Regression": "final_model_pipeline_lr.pkl",
-        "LightGBM": "final_model_pipeline_lgb.pkl",
-        "Random Forest": "final_model_pipeline_rfr.pkl",
-        "XGBoost": "final_model_pipeline_xgb.pkl",
-    }
 
-    results = []
+def predict_with_model(model, X):
+    """Return prediction + probability or errors."""
+    if model is None:
+        return "ERROR", None, "Model file missing"
 
-    # ---------------------------------------------------
-    # Predictions
-    # ---------------------------------------------------
-    st.subheader("📊 Predictions from All Models")
+    try:
+        pred = model.predict(X)[0]
+        try:
+            prob = model.predict_proba(X)[0][1]
+        except:
+            prob = None
+        return pred, prob, "OK"
+    except Exception as e:
+        return "ERROR", None, "Pipeline is not fitted or input invalid"
 
-    for name, file in model_files.items():
-        model, status = load_model(file)
 
-        if model is None:
-            results.append([name, "ERROR", "—", status])
-        else:
-            try:
-                pred = model.predict(X)
-                prob = (
-                    model.predict_proba(X)[:, 1]
-                    if hasattr(model, "predict_proba")
-                    else ["N/A"] * len(pred)
-                )
+def generate_pdf(result_df):
+    """Generate PDF from DataFrame."""
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
 
-                results.append([
-                    name,
-                    pred[0] if len(pred) > 0 else "N/A",
-                    prob[0] if isinstance(prob, (list, pd.Series)) else "N/A",
-                    "✔️ Prediction successful"
-                ])
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=letter)
+    textobject = c.beginText(40, 750)
+    textobject.setFont("Helvetica", 10)
 
-            except Exception as e:
-                results.append([name, "ERROR", "—", f"❌ {str(e)}"])
+    for line in result_df.to_string().split("\n"):
+        textobject.textLine(line)
 
-    # ---------------------------------------------------
-    # Display results table
-    # ---------------------------------------------------
-    results_df = pd.DataFrame(
-        results, columns=["Model", "Prediction", "Probability", "Status"]
+    c.drawText(textobject)
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+
+# -----------------------------
+# MAIN UI
+# -----------------------------
+st.title("🧠 Machine Failure Prediction System")
+st.write("Run all 4 ML models and compare predictions.")
+
+
+# -----------------------------
+# DEMO INPUT
+# -----------------------------
+if st.button("Use Demo Input"):
+    st.session_state["input_df"] = pd.DataFrame(
+        {
+            "Air temperature [K]": [300],
+            "Process temperature [K]": [310],
+            "Rotational speed [rpm]": [1500],
+            "Torque [Nm]": [40],
+            "Tool wear [min]": [120],
+            "Type": ["L"]
+        }
     )
-    st.dataframe(results_df, use_container_width=True)
 
-    # ---------------------------------------------------
-    # Download results as CSV or PDF
-    # ---------------------------------------------------
-    st.subheader("📥 Download Results")
+# -----------------------------
+# CSV UPLOAD
+# -----------------------------
+uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
-    csv = results_df.to_csv(index=False).encode()
-    st.download_button("Download CSV", csv, "results.csv", "text/csv")
-
-    # PDF Download using base64 HTML trick
-    html = results_df.to_html(index=False)
-    b64 = base64.b64encode(html.encode()).decode()
-    pdf_link = f'<a href="data:application/octet-stream;base64,{b64}" download="results.html">Download PDF/HTML</a>'
-    st.markdown(pdf_link, unsafe_allow_html=True)
-
+if uploaded:
+    df_input = pd.read_csv(uploaded)
+elif "input_df" in st.session_state:
+    df_input = st.session_state["input_df"]
 else:
-    st.info("Upload a CSV file to begin.")
+    st.stop()
+
+st.subheader("🔍 Input Data")
+st.dataframe(df_input)
+
+X = prepare_features(df_input)
+
+# -----------------------------
+# RUN MODELS
+# -----------------------------
+results = []
+
+for model_name, model in models.items():
+    pred, prob, note = predict_with_model(model, X)
+    results.append([model_name, pred, prob, note])
+
+result_df = pd.DataFrame(results, columns=["Model", "Prediction", "Probability", "Notes"])
+
+st.subheader("📊 Model Predictions")
+st.dataframe(result_df, use_container_width=True)
+
+
+# -----------------------------
+# DOWNLOAD PDF
+# -----------------------------
+pdf_buffer = generate_pdf(result_df)
+
+st.download_button(
+    label="📥 Download Results as PDF",
+    data=pdf_buffer,
+    file_name="prediction_results.pdf",
+    mime="application/pdf"
+)
