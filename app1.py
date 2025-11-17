@@ -54,10 +54,11 @@ def download_asset_if_missing(rel_path: str, release_filename: str) -> Path | No
 @st.cache_resource
 def load_models() -> Dict[str, Any]:
     specs = {
-        "Logistic Regression": ("models/final_model_pipeline_lr.pkl", "final_model_pipeline_lr.pkl"),
-        "LightGBM": ("models/final_model_pipeline_lgb.pkl", "final_model_pipeline_lgb.pkl"),
-        "Random Forest": ("models/final_model_pipeline_rfr.pkl", "final_model_pipeline_rfr.pkl"),
-        "XGBoost": ("models/final_model_pipeline_xgb.pkl", "final_model_pipeline_xgb.pkl"),
+        "TWF": ("models/final_model_pipeline_TWF_xgb.pkl", "final_model_pipeline_TWF_xgb.pkl"),
+        "HDF": ("models/final_model_pipeline_HDF_lgb.pkl", "final_model_pipeline_HDF_lgb.pkl"),
+        "PWF": ("models/final_model_pipeline_PWF_rfr.pkl", "final_model_pipeline_PWF_rfr.pkl"),
+        "OSF": ("models/final_model_pipeline_OSF_xgb.pkl", "final_model_pipeline_OSF_xgb.pkl"),
+        "RNF": ("models/final_model_pipeline_RNF_lr.pkl", "final_model_pipeline_RNF_lr.pkl"),
     }
     loaded: Dict[str, Any] = {}
     for name, (rel_path, asset_name) in specs.items():
@@ -114,7 +115,6 @@ rot_speed = st.sidebar.number_input("Rotational Speed (rpm)", value=1800.0, step
 torque = st.sidebar.number_input("Torque (Nm)", value=40.0, step=1.0)
 tool_wear = st.sidebar.number_input("Tool Wear (min)", value=150.0, step=1.0)
 
-model_choice = st.sidebar.selectbox("Choose model for single-sample (or 'Ensemble')", options=["Ensemble"] + list(models.keys()))
 st.sidebar.markdown("---")
 allow_downloads = st.sidebar.checkbox("Allow per-file CSV download (batch)", value=True)
 show_head = st.sidebar.checkbox("Show head preview (batch)", value=True)
@@ -150,18 +150,31 @@ with col1:
     if st.button("Predict Failure"):
         st.info("Running predictions...")
         model_results: Dict[str, Dict[str, Any]] = {}
-        for name, mdl in models.items():
+        output_dict = {}
+        for target, mdl in models.items():
             if isinstance(mdl, Exception):
-                model_results[name] = {"error": str(mdl)}
+                model_results[target] = {"error": str(mdl)}
+                output_dict[target] = None
                 continue
             preds, proba, err = safe_predict(mdl, single_df)
             if err:
-                model_results[name] = {"error": str(err)}
+                model_results[target] = {"error": str(err)}
+                output_dict[target] = None
             else:
-                model_results[name] = {
+                model_results[target] = {
                     "pred": int(preds[0]) if preds is not None else None,
                     "proba": float(proba[0]) if proba is not None else None,
                 }
+                output_dict[target] = int(preds[0]) if preds is not None else None
+
+        
+        # Show as table
+        output_table = pd.DataFrame({
+            'Parameter': list(output_dict.keys()),
+            'Prediction': list(output_dict.values())
+        })
+        st.markdown("### Output table (per target)")
+        st.dataframe(output_table, use_container_width=True)
 
         # compute ensemble
         probs = [v.get("proba") for v in model_results.values() if v.get("proba") is not None]
@@ -193,16 +206,11 @@ with col1:
                 })
 
         df_results = pd.DataFrame(rows)
-        st.markdown("### Model outputs")
-        st.dataframe(df_results.set_index("Model"), use_container_width=True)
+        
 
-        # DEBUG: Show the raw input DataFrame used for prediction
-        st.markdown("### Raw input DataFrame for prediction")
-        st.dataframe(single_df)
+    
 
-        # DEBUG: Show the raw predictions (all model outputs)
-        st.markdown("### Raw model predictions (dict)")
-        st.write(model_results)
+       
 
         st.markdown("### Ensemble result")
         if ensemble_pred is None:
