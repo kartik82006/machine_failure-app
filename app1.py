@@ -1,8 +1,9 @@
 # app1.py
+from __future__ import annotations
 import io
 import pickle
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, List, Optional
 
 import joblib
 import numpy as np
@@ -211,22 +212,20 @@ rot_speed = st.sidebar.number_input("Rotational Speed (rpm)", value=1800.0, step
 torque = st.sidebar.number_input("Torque (Nm)", value=40.0, step=1.0)
 tool_wear = st.sidebar.number_input("Tool Wear (min)", value=150.0, step=1.0)
 
-single_model_choice = st.sidebar.selectbox("Choose model for single-sample (or 'Ensemble')",
-                                           options=["Ensemble"] + list(models.keys()))
 st.sidebar.markdown("---")
 allow_downloads = st.sidebar.checkbox("Allow per-file CSV download (batch)", value=True)
 show_head = st.sidebar.checkbox("Show head preview (batch)", value=True)
 st.sidebar.caption("Add 'newcsv.csv' at repo root or data/ to enable demo.")
 
 def build_input_df(air_c, proc_c, rpm, tq, wear) -> pd.DataFrame:
-    return pd.DataFrame({
-        "Air temperature [K]": [air_c + 273.15],
-        "Process temperature [K]": [proc_c + 273.15],
-        "Rotational speed [rpm]": [rpm],
-        "Torque [Nm]": [tq],
-        "Tool wear [min]": [wear],
+    df = pd.DataFrame({
+        "Type": ["M"],
+        "Air temperature [K]": [300 + 273.15],
+        "Process temperature [K]": [305 + 273.15],
+        "Rotational speed [rpm]": [1800],
+        "Torque [Nm]": [40],
+        "Tool wear [min]": [150],
     })
-    # Add engineered features
     df["del_T"] = df["Process temperature [K]"] - df["Air temperature [K]"]
     df["power proxy"] = df["Rotational speed [rpm]"] * df["Torque [Nm]"]
     df["wear_rate"] = df["Tool wear [min]"] / df["Rotational speed [rpm]"]
@@ -298,82 +297,112 @@ def run_batch_on_df(df: pd.DataFrame, source_name: str) -> Optional[pd.DataFrame
     return result_df
 
 # ---------- Layout ----------
-col1, col2 = st.columns([1, 2])
+col1, col2 = st.columns([1, 3])
 
 with col1:
     st.header("Single-sample prediction")
     st.write("Fill sidebar values and press Predict.")
 
-    if st.button("Predict Failure"):
-        st.info("Running predictions...")
-        model_results: Dict[str, Dict[str, Any]] = {}
-        notes_for_table = {}
+    # Create a unique key for tracking parameter changes
+    current_params = (air_temp_c, process_temp_c, rot_speed, torque, tool_wear)
+    
+    # Initialize session state for predictions
+    if 'predicted' not in st.session_state:
+        st.session_state.predicted = False
+    if 'last_params' not in st.session_state:
+        st.session_state.last_params = None
+    
+    # Check if parameters have changed
+    if st.session_state.last_params != current_params:
+        st.session_state.predicted = False
+        st.session_state.last_params = current_params
 
-        for name, entry in models.items():
-            preds, proba, note = safe_predict_wrapper(entry, single_df)
+    if not st.session_state.predicted:
+        if st.button("Predict Failure"):
+            st.session_state.predicted = True
+            st.rerun()
+    
+    if st.session_state.predicted:
+        st.success("Predicted Failure ✅")
+        
+        # Map models to their corresponding failure type labels (matching notebook)
+        label_to_model = {
+            "TWF": "XGBoost",        # TWF: xgb (from notebook)
+            "HDF": "LightGBM",       # HDF: lgb (from notebook)
+            "PWF": "Random Forest",  # PWF: rfr (from notebook)
+            "OSF": "XGBoost",        # OSF: xgb (from notebook)
+            "RNF": "Logistic Regression"  # RNF: lr (from notebook)
+        }
+        
+        # Load the actual trained models if they exist
+        model_files = {
+            "TWF": "final_model_pipeline_TWF_xgb.pkl",
+            "HDF": "final_model_pipeline_HDF_lgb.pkl",
+            "PWF": "final_model_pipeline_PWF_rfr.pkl",
+            "OSF": "final_model_pipeline_OSF_xgb.pkl",
+            "RNF": "final_model_pipeline_RNF_lr.pkl"
+        }
+        
+        label_order = ["TWF", "HDF", "PWF", "OSF", "RNF"]
+        output_dict = {}
+        label_results = {}
+        
+        for label in label_order:
+            model_file = ROOT / "models" / model_files[label]
+            
+            # Try to load the specific trained model first
+            if model_file.exists():
+                try:
+                    import joblib
+                    loaded_model = joblib.load(model_file)
+                    preds = loaded_model.predict(single_df)
+                    proba = loaded_model.predict_proba(single_df)[:, 1] if hasattr(loaded_model, 'predict_proba') else None
+                    note = ""
+                except Exception as e:
+                    # Fallback to generic models
+                    model_name = label_to_model[label]
+                    entry = models.get(model_name)
+                    if entry is None:
+                        entry = {"model": ToyModel(model_name), "note": f"Missing model file: {model_name}"}
+                    preds, proba, note = safe_predict_wrapper(entry, single_df)
+            else:
+                # Fallback to generic models
+                model_name = label_to_model[label]
+                entry = models.get(model_name)
+                if entry is None:
+                    entry = {"model": ToyModel(model_name), "note": f"Missing model file: {model_name}"}
+                preds, proba, note = safe_predict_wrapper(entry, single_df)
+            
             if preds is None:
-                model_results[name] = {"pred": None, "proba": None, "note": note}
+                output_dict[label] = "ERROR"
+                label_results[label] = {"Prediction": "ERROR", "Probability": "—", "Notes": note}
             else:
-                model_results[name] = {"pred": int(preds[0]), "proba": float(proba[0]) if proba is not None else None, "note": note}
-            notes_for_table[name] = model_results[name]["note"] or ""
-
-        # ensemble
-        probs = [v["proba"] for v in model_results.values() if v["proba"] is not None]
-        if len(probs) > 0:
-            ensemble_prob = float(np.nanmean(probs))
-            ensemble_pred = int(ensemble_prob >= 0.5)
-        else:
-            preds_only = [v["pred"] for v in model_results.values() if v["pred"] is not None]
-            if len(preds_only) > 0:
-                ensemble_pred = int(round(np.mean(preds_only)))
-                ensemble_prob = None
-            else:
-                ensemble_pred = None
-                ensemble_prob = None
-
-        # show table
+                output_dict[label] = int(preds[0])
+                label_results[label] = {
+                    "Prediction": int(preds[0]),
+                    "Probability": f"{float(proba[0]):.3f}" if proba is not None else "—",
+                    "Notes": note or ""
+                }
+        
+        # Display detailed table by label
         rows = []
-        for name, res in model_results.items():
-            if res["pred"] is None:
-                rows.append({"Model": name, "Prediction": "ERROR", "Prob": "—", "Notes": res["note"] or ""})
-            else:
-                rows.append({"Model": name, "Prediction": res["pred"], "Prob": f"{res['proba']:.3f}" if res["proba"] is not None else "—", "Notes": res["note"] or ""})
-        st.markdown("### Model outputs")
-        st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
+        for label in label_order:
+            res = label_results[label]
+            rows.append({"Failure Type": label, **res})
+        
+        st.markdown("### Detailed Failure Type Predictions")
+        st.dataframe(pd.DataFrame(rows).set_index("Failure Type"), use_container_width=True, height=250)
 
-        st.markdown("### Ensemble result")
-        if ensemble_pred is None:
-            st.warning("No successful outputs to produce an ensemble.")
-        else:
-            if ensemble_pred == 1:
-                if ensemble_prob is not None:
-                    st.error(f"🚨 Ensemble: MACHINE LIKELY TO FAIL (prob = {ensemble_prob:.2f})")
-                else:
-                    st.error("🚨 Ensemble: MACHINE LIKELY TO FAIL (by majority vote)")
-            else:
-                if ensemble_prob is not None:
-                    st.success(f"✅ Ensemble: MACHINE SAFE (failure prob = {ensemble_prob:.2f})")
-                else:
-                    st.success("✅ Ensemble: MACHINE SAFE (by majority vote)")
-
-        # chart
+        # Chart for probabilities by label
         if _have_matplotlib:
-            names = []
-            probs_plot = []
-            for n, r in model_results.items():
-                if r["probo := r.get('proba')"] if False else True:  # no-op to keep formatting consistent
-                    pass
-            # collect properly
-            for n, r in model_results.items():
-                if r["proba"] is not None:
-                    names.append(n)
-                    probs_plot.append(r["proba"])
+            names = [row["Failure Type"] for row in rows if row["Probability"] not in ["—", "N/A"]]
+            probs_plot = [float(row["Probability"]) for row in rows if row["Probability"] not in ["—", "N/A"]]
             if probs_plot:
-                fig, ax = plt.subplots(figsize=(5, 2.2))
+                fig, ax = plt.subplots(figsize=(8, 3))
                 ax.barh(names, probs_plot, height=0.5)
                 ax.set_xlim(0, 1)
                 ax.set_xlabel("Failure probability")
-                ax.set_title("Model failure probabilities")
+                ax.set_title("Failure probabilities by type")
                 for i, v in enumerate(probs_plot):
                     ax.text(v + 0.01, i, f"{v:.2f}", va="center")
                 st.pyplot(fig)
@@ -441,28 +470,60 @@ else:
     st.info("PDF export disabled (fpdf missing).")
 
 if st.button("Create & download PDF report (single sample)"):
-    # Re-run single-sample predictions for the report
-    model_results = {}
-    for name, entry in models.items():
-        preds, proba, note = safe_predict_wrapper(entry, single_df)
+    # Re-run single-sample predictions for the report with same logic as main prediction
+    label_to_model = {
+        "TWF": "XGBoost",
+        "HDF": "LightGBM",
+        "PWF": "Random Forest",
+        "OSF": "XGBoost",
+        "RNF": "Logistic Regression"
+    }
+    
+    model_files = {
+        "TWF": "final_model_pipeline_TWF_xgb.pkl",
+        "HDF": "final_model_pipeline_HDF_lgb.pkl",
+        "PWF": "final_model_pipeline_PWF_rfr.pkl",
+        "OSF": "final_model_pipeline_OSF_xgb.pkl",
+        "RNF": "final_model_pipeline_RNF_lr.pkl"
+    }
+    
+    label_order = ["TWF", "HDF", "PWF", "OSF", "RNF"]
+    label_results = {}
+    
+    for label in label_order:
+        model_file = ROOT / "models" / model_files[label]
+        
+        # Try to load the specific trained model first
+        if model_file.exists():
+            try:
+                import joblib
+                loaded_model = joblib.load(model_file)
+                preds = loaded_model.predict(single_df)
+                proba = loaded_model.predict_proba(single_df)[:, 1] if hasattr(loaded_model, 'predict_proba') else None
+                note = ""
+            except Exception as e:
+                # Fallback to generic models
+                model_name = label_to_model[label]
+                entry = models.get(model_name)
+                if entry is None:
+                    entry = {"model": ToyModel(model_name), "note": f"Missing model file: {model_name}"}
+                preds, proba, note = safe_predict_wrapper(entry, single_df)
+        else:
+            # Fallback to generic models
+            model_name = label_to_model[label]
+            entry = models.get(model_name)
+            if entry is None:
+                entry = {"model": ToyModel(model_name), "note": f"Missing model file: {model_name}"}
+            preds, proba, note = safe_predict_wrapper(entry, single_df)
+        
         if preds is None:
-            model_results[name] = {"pred": None, "proba": None, "note": note}
+            label_results[label] = {"pred": "ERROR", "proba": None, "note": note}
         else:
-            model_results[name] = {"pred": int(preds[0]), "proba": float(proba[0]) if proba is not None else None, "note": note}
-
-    # ensemble same as before
-    probs = [v["proba"] for v in model_results.values() if v["proba"] is not None]
-    if len(probs) > 0:
-        ensemble_prob = float(np.nanmean(probs))
-        ensemble_pred = int(ensemble_prob >= 0.5)
-    else:
-        preds_only = [v["pred"] for v in model_results.values() if v["pred"] is not None]
-        if len(preds_only) > 0:
-            ensemble_pred = int(round(np.mean(preds_only)))
-            ensemble_prob = None
-        else:
-            ensemble_pred = None
-            ensemble_prob = None
+            label_results[label] = {
+                "pred": int(preds[0]),
+                "proba": float(proba[0]) if proba is not None else None,
+                "note": note or ""
+            }
 
     if not _have_fpdf:
         st.error("FPDF not installed; can't create PDF.")
@@ -474,25 +535,23 @@ if st.button("Create & download PDF report (single sample)"):
         pdf.cell(0, 10, "Machine Failure Prediction Report", ln=True, align='C')
         pdf.ln(6)
         pdf.set_font("Arial", size=11)
-        pdf.cell(0, 8, "Input (single sample):", ln=True)
-        for k, v in single_df.iloc[0].items():
-            pdf.cell(0, 7, f" - {k}: {v}", ln=True)
+        pdf.cell(0, 8, "Input Parameters:", ln=True)
+        pdf.cell(0, 7, f" - Air Temperature: {air_temp_c} C", ln=True)
+        pdf.cell(0, 7, f" - Process Temperature: {process_temp_c} C", ln=True)
+        pdf.cell(0, 7, f" - Rotational Speed: {rot_speed} rpm", ln=True)
+        pdf.cell(0, 7, f" - Torque: {torque} Nm", ln=True)
+        pdf.cell(0, 7, f" - Tool Wear: {tool_wear} min", ln=True)
         pdf.ln(4)
-        pdf.cell(0, 8, "Model outputs:", ln=True)
-        for name, res in model_results.items():
-            if res["pred"] is None:
-                pdf.cell(0, 6, f" - {name}: ERROR ({res['note']})", ln=True)
+        pdf.cell(0, 8, "Failure Type Predictions:", ln=True)
+        for label in label_order:
+            res = label_results[label]
+            if res["pred"] == "ERROR":
+                pdf.cell(0, 6, f" - {label}: ERROR ({res['note']})", ln=True)
             else:
                 if res["proba"] is not None:
-                    pdf.cell(0, 6, f" - {name}: pred={res['pred']}, prob={res['proba']:.3f}", ln=True)
+                    pdf.cell(0, 6, f" - {label}: Prediction={res['pred']}, Probability={res['proba']:.3f}", ln=True)
                 else:
-                    pdf.cell(0, 6, f" - {name}: pred={res['pred']}", ln=True)
-        pdf.ln(6)
-        pdf.cell(0, 8, "Ensemble:", ln=True)
-        if ensemble_pred is None:
-            pdf.cell(0, 6, "No ensemble could be computed.", ln=True)
-        else:
-            pdf.cell(0, 6, f"Ensemble pred: {ensemble_pred}; prob: {ensemble_prob}", ln=True)
+                    pdf.cell(0, 6, f" - {label}: Prediction={res['pred']}", ln=True)
 
         out = io.BytesIO()
         out.write(pdf.output(dest='S').encode('latin1'))
